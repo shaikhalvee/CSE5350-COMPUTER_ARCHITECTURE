@@ -1,0 +1,12 @@
+Assignment 1 — Quick Checklist (≤ 3 pages total)
+
+[ ] Pick TWO free benchmarks: (A) CPU/memory and (B) GPU or storage.
+[ ] Record full DUT specs (CPU, GPU, RAM, storage, OS, power mode).
+[ ] Close background apps; set consistent power mode; plug in for laptops.
+[ ] For each tool, note: version, settings, runs/loops/duration.
+[ ] Run Tool A. Capture screenshot. Copy raw numbers into a table.
+[ ] Run Tool B. Capture screenshot. Copy raw numbers into a table.
+[ ] Compare to at least one other system per metric. Save links to sources.
+[ ] Explain how your tools define/estimate “CPU speed” (freq vs IPC, workload).
+[ ] State whether the tools measure disk I/O, graphics, memory/flash (and how).
+[ ] Write conclusions + references. Export to PDF. Name file: YourName-Assignment1.
