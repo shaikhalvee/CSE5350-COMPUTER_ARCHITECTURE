@@ -33,9 +33,12 @@ opcodes = {'add': (2, 1), 'sub': (2, 2),  # ie, "add" is a type 2 instruction, o
            'int': (3, 16), 'sys': (3, 16),  # syscalls are same as interrupts
            'dw': (4, 0), 'go': (3, 0), 'end': (0, 0)}  # pseudo ops
 curaddr = 0  # start assembling to location 0
+
 # for line in open(sys.argv[1], 'r').readlines():       # command line
 infile = open("in.asm", 'r')
-# Build Symbol Table
+
+# -------   Pass 1
+# -------   Build Symbol Table
 symboltable = {}
 for line in infile.readlines():  # read our asm code
     # tokens = line.split(line.lower())  # tokens on each line
@@ -45,54 +48,80 @@ for line in infile.readlines():  # read our asm code
     tokens = line.split()
     firsttoken = tokens[0]
 
-    print(tokens)
+    print(f'tokens: {tokens}')
 
     if firsttoken.isdigit():  # if line starts with an address
         curaddr = int(tokens[0])  # assemble to here
         tokens = tokens[1:]
-    if firsttoken == u';':  # skip comments
-        continue
-    if firsttoken == u'go':  # start execution here
-        startexecptr = (int(tokens[1]) & ((2 ** wordsize) - 1))  # data
-        continue
-    if firsttoken == u'.':
-        symboltable[firsttoken] = curaddr
-    curaddr = curaddr + 1
-
-print("symbol table")
-print(symboltable)
-print("end sym table")
-
-infile.close()
-infile = open("in.asm", 'r')
-for line in infile.readlines():  # read our asm code
-    tokens = line.split(line.lower())  # tokens on each line
-    firsttoken = tokens[0]
-    if firsttoken.isdigit():  # if line starts with an address
-        curaddr = int(tokens[0])  # assemble to here
-        tokens = tokens[1:]
+        if not tokens:
+            continue
     if firsttoken == ';':  # skip comments
         continue
     if firsttoken == 'go':  # start execution here
         startexecptr = (int(tokens[1]) & ((2 ** wordsize) - 1))  # data
         continue
-    # if firsttoken == '.':
-    #     symaddr = symboltable[firsttoken]
-    #     tokens = tokens[1:]
     if firsttoken.startswith('.'):
-        symboltable[firsttoken] = curaddr   # in the 1st pass
+        symboltable[firsttoken] = curaddr
+        tokens = tokens[1:]
+    mnem = tokens[0]
+    instype = opcodes[mnem][0]
+    # only lines that emit a word should advance curaddr
+    if instype in (1, 2, 3, 4):  # dec/inc, add/sub, ld/st/bnz/..., dw
+        curaddr += 1
+    # 'end' (type 0) emits nothing
+
+print("symbol table")
+print(symboltable)
+print("end sym table")
+
+# ------    Pass 2
+infile.close()
+infile = open("in.asm", 'r')
+
+# IMPORTANT: reset address for pass 2
+curaddr = 0
+for raw in infile.readlines():  # read our asm code
+    # strip comments and blanks
+    line = raw.split(';', 1)[0].strip()
+    if not line:
+        continue
+
+    tokens = line.split()  # tokens on each line :: old->line.split(line.lower())
+
+    firsttoken = tokens[0]
+    if firsttoken.isdigit():  # if line starts with an address
+        curaddr = int(tokens[0])  # assemble to here
+        tokens = tokens[1:]
+        if not tokens:
+            continue
+    # if firsttoken == ';':  # skip comments
+    #     continue
+    if firsttoken == 'go':  # start execution here
+        startexecptr = (int(tokens[1]) & ((2 ** wordsize) - 1))  # data
+        continue
+
+    if firsttoken.startswith('.'):
+        # symboltable[firsttoken] = curaddr   # in the 1st pass
         # in the 2nd pass, drop the label token before parsing mnemonic:
         tokens = tokens[1:]
         firsttoken = tokens[0]
+        if not tokens:
+            continue
     memdata = 0  # build instruction step by step
 
     print("tokens", tokens[0])  # DEBUG
-    # if tokens and tokens[0] in opcodes:
-    #     print("here:", opcodes[tokens[0]])
-    print("here:", opcodes[tokens[0]])  # DEBUG
 
-    instype = opcodes[tokens[0]][0]
-    memdata = (opcodes[tokens[0]][1]) << opcposition  # put in opcode
+    if tokens and tokens[0] in opcodes:
+        print("here:", opcodes[tokens[0]])
+    # print("here:", opcodes[tokens[0]])  # DEBUG
+
+    # from here tokens[0] must be a mnemonic
+    mnem = tokens[0]
+
+    # instype = opcodes[tokens[0]][0]
+    instype, opcode = opcodes[mnem]
+    # memdata = (opcodes[tokens[0]][1]) << opcposition  # put in opcode
+    memdata = (opcode << opcposition)
     if instype == 4:  # dw type
         memdata = (int(tokens[1]) & ((2 ** wordsize) - 1))  # data is wordsize long
     elif instype == 0:  # end type
@@ -109,7 +138,8 @@ for line in infile.readlines():  # read our asm code
             memaddr = symboltable[token2]
         memdata = memdata + (regval(tokens[1]) << reg1position) + memaddr
     mem[curaddr] = memdata  # memory image at the current location
-    curaddr = curaddr + 1
+    curaddr += 1
+
 outfile = open("a.out", 'w')  # done, write it out
 outfile.write('go ' + '%d' % startexecptr)  # start execution here
 outfile.write("\n")
