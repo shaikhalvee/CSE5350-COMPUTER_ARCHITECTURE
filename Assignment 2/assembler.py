@@ -38,9 +38,15 @@ infile = open("in.asm", 'r')
 # Build Symbol Table
 symboltable = {}
 for line in infile.readlines():  # read our asm code
-    tokens = line.split(line.lower())  # tokens on each line
+    # tokens = line.split(line.lower())  # tokens on each line
+    line = line.split(';', 1)[0].rstrip()  # strip comments
+    if not line:
+        continue
+    tokens = line.split()
     firsttoken = tokens[0]
+
     print(tokens)
+
     if firsttoken.isdigit():  # if line starts with an address
         curaddr = int(tokens[0])  # assemble to here
         tokens = tokens[1:]
@@ -52,9 +58,11 @@ for line in infile.readlines():  # read our asm code
     if firsttoken == u'.':
         symboltable[firsttoken] = curaddr
     curaddr = curaddr + 1
+
 print("symbol table")
 print(symboltable)
 print("end sym table")
+
 infile.close()
 infile = open("in.asm", 'r')
 for line in infile.readlines():  # read our asm code
@@ -68,12 +76,21 @@ for line in infile.readlines():  # read our asm code
     if firsttoken == 'go':  # start execution here
         startexecptr = (int(tokens[1]) & ((2 ** wordsize) - 1))  # data
         continue
-    if firsttoken == '.':
-        symaddr = symboltable[firsttoken]
+    # if firsttoken == '.':
+    #     symaddr = symboltable[firsttoken]
+    #     tokens = tokens[1:]
+    if firsttoken.startswith('.'):
+        symboltable[firsttoken] = curaddr   # in the 1st pass
+        # in the 2nd pass, drop the label token before parsing mnemonic:
         tokens = tokens[1:]
+        firsttoken = tokens[0]
     memdata = 0  # build instruction step by step
+
     print("tokens", tokens[0])  # DEBUG
+    # if tokens and tokens[0] in opcodes:
+    #     print("here:", opcodes[tokens[0]])
     print("here:", opcodes[tokens[0]])  # DEBUG
+
     instype = opcodes[tokens[0]][0]
     memdata = (opcodes[tokens[0]][1]) << opcposition  # put in opcode
     if instype == 4:  # dw type
