@@ -39,6 +39,45 @@ numdatarefs = 0  # number of times data read
 starttime = time.time()
 curtime = starttime
 
+# Part 2: Hazard model (5-stage) & 1-bit branch predictor
+WB_LAT = 5  # cycles until a dest register becomes visible (WB stage)
+reg_ready = [0] * numregs  # cycle when each reg's value is ready
+hazard_stalls = 0          # total cycles stalled for hazards
+hazard_events = []         # (pc, kind, regs, stall)
+IND_BIT = (1 << numregbits)
+
+def stall_until(target_cycle, reason, regs):
+    """If clock < target_cycle, stall and log it."""
+    global clock, hazard_stalls
+    if clock < target_cycle:
+        stall = target_cycle - clock
+        clock += stall
+        hazard_stalls += stall
+        # pc is the instruction we just fetched: ip-1
+        hazard_events.append((ip - 1, reason, list(regs), stall))
+        return stall
+    return 0
+
+def mark_write(dest_reg):
+    """Mark when dest register will be ready (after WB)."""
+    if dest_reg is not None:
+        reg_ready[dest_reg] = clock + WB_LAT
+
+# ---- 1-bit branch predictor ----
+BP_ENTRIES = 64
+BP_MISPRED_PENALTY = 3  # configurable control hazard penalty
+bp_table = [0] * BP_ENTRIES   # 0=not-taken, 1=taken
+bp_hits = 0
+bp_misses = 0
+
+def bp_index(pc):  # pc is word address of the branch instruction
+    return pc & (BP_ENTRIES - 1)
+
+PHYS_MASK = (1 << numregbits) - 1
+def phys_reg(r):
+    # strip indirect bit to get the base register index (0..numregs-1)
+    return r & PHYS_MASK
+# ---
 
 def startexechere(p):
     # start execution at this address
@@ -174,8 +213,65 @@ while 1:
         operand2 = addr
     elif opcodes[opcode][0] == 0:  # ? type
         break
+
+        # ===== Part 2: data hazard detection (RAW/WAW) =====
+        # Identify source and destination regs precisely by opcode
+    sources = []
+    dest = None
+
+    if opcode in (1, 2):  # add/sub: r1 <= f(r1, r2)
+        sources = [reg1, reg2]
+        dest = reg1
+    elif opcode in (3, 4):  # dec/inc: r1 <= f(r1)
+        sources = [reg1]
+        dest = reg1
+    elif opcode == 7:  # ld: r1 <= MEM[addr]
+        sources = []  # (no true reg source dep for ld)
+        dest = reg1
+    elif opcode == 8:  # st: MEM[addr] <= r1
+        sources = [reg1]
+        dest = None
+    elif opcode == 9:  # ldi: r1 <= imm
+        sources = []
+        dest = reg1
+    elif opcode == 12:  # bnz r1, addr    (reads r1)
+        sources = [reg1]
+        dest = None
+    elif opcode == 13:  # brl r1, addr    (writes link to r1)
+        sources = []
+        dest = reg1
+    elif opcode == 14:  # ret r1          (reads r1)
+        sources = [reg1]
+        dest = None
+    elif opcode == 16:  # int/sys r1      (reads and then writes r1)
+        sources = [reg1]
+        dest = reg1
+    # convert logical (possibly indirect) to physical reg indices
+    sources_phys = [phys_reg(r) for r in sources]
+    dest_phys = None if (dest is None) else phys_reg(dest)
+
+    # RAW: all sources must be ready before we proceed
+    if sources_phys:
+        need = max(reg_ready[r] for r in sources_phys)
+        stall_until(need, "RAW", sources_phys)
+
+    # WAW: don't clobber an outstanding earlier write to the same dest
+    if dest_phys is not None:
+        stall_until(reg_ready[dest_phys], "WAW", [dest_phys])
+
     if opcode == 7:  # get data memory for loads
         memdata = getdatamem(operand2)
+
+    # ---- Branch prediction bookkeeping for BNZ (uses current ip as fallthrough) ----
+    # pc of this instruction is ip-1 (we incremented ip right after fetch)
+    pc = ip - 1
+    predicted_taken = None
+    predicted_next = None
+    if opcode == 12:  # bnz
+        idx = bp_index(pc)
+        predicted_taken = (bp_table[idx] == 1)
+        predicted_next = (operand2 if predicted_taken else ip)  # fallthrough is current
+
     # execute
     if opcode == 1:  # add
         result = (operand1 + operand2) & nummask
@@ -200,13 +296,23 @@ while 1:
         # operand2: absolute address (low field)
         setdatamem(operand2, operand1)
         result = None  # nothing to write back
-
     elif opcode == 9:  # load immediate
         result = operand2
     elif opcode == 12:  # conditional branch
-        result = operand1
-        if result != 0:
-            ip = operand2
+        # Actual outcome
+        taken = (operand1 != 0)
+        actual_next = operand2 if taken else ip
+        # Compare to prediction (if we made one)
+        if predicted_taken is not None:
+            if predicted_next == actual_next:
+                bp_hits += 1
+            else:
+                bp_misses += 1
+                clock += BP_MISPRED_PENALTY  # control hazard penalty on mispredict
+            # Update predictor
+            bp_table[bp_index(pc)] = 1 if taken else 0
+        ip = actual_next
+        result = operand1  # for consistency with your existing code path
     elif opcode == 13:  # branch and link
         result = ip
         ip = operand2
@@ -231,6 +337,11 @@ while 1:
         reg[reg1] = result
     elif opcode == 16:  # store return address
         reg[reg1] = result
+
+    # Mark destination ready after WB (for instructions that write a reg)
+    if opcode in (1, 2, 3, 4, 7, 9, 13, 16):
+        mark_write(phys_reg(reg1))
+
     # base 5-cycle model for Part 1
     clock += 5
     # end of instruction loop
@@ -242,4 +353,12 @@ print('Clock =', clock)
 print('Code refs =', numcoderefs)
 print('Data refs =', numdatarefs)
 print('Total mem refs =', numcoderefs + numdatarefs)
+
+print('=== CAT2 Part 2 stats ===')
+print('Hazard stalls =', hazard_stalls, 'cycles')
+print('Branch predictor: hits =', bp_hits, 'misses =', bp_misses)
+# If you want to see a few recent hazards:
+for e in hazard_events[-10:]:
+    pc, kind, regs, stall = e
+    print(f'Hazard @pc={pc}: {kind} regs={regs} stalled {stall} cycles')
 
