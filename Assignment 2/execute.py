@@ -119,6 +119,26 @@ def trap(t, a=None):
     return (rv, rl)
 
 
+# part 1 codes here
+def getcodemem(a):
+    # instruction fetch
+    global numcoderefs
+    numcoderefs += 1
+    return mem[a + reg[codeseg]]
+
+def getdatamem(a):
+    # data read
+    global numdatarefs
+    numdatarefs += 1
+    return mem[a + reg[dataseg]]
+
+def setdatamem(a, val):
+    # data write (store)
+    global numdatarefs
+    numdatarefs += 1
+    mem[a + reg[dataseg]] = val & nummask
+
+
 # opcode type (1 reg, 2 reg, reg+addr, immed), mnemonic
 opcodes = {1: (2, 'add'), 2: (2, 'sub'),
            3: (1, 'dec'), 4: (1, 'inc'),
@@ -159,15 +179,15 @@ while 1:
     # execute
     if opcode == 1:  # add
         result = (operand1 + operand2) & nummask
-        if (checkres(operand1, operand2, result)):
+        if checkres(operand1, operand2, result):
             tval, treg = trap(1)
             if (tval == -1):  # overflow
                 break
     elif opcode == 2:  # sub
         result = (operand1 - operand2) & nummask
-        if (checkres(operand1, operand2, result)):
+        if checkres(operand1, operand2, result):
             tval, treg = trap(1)
-            if (tval == -1):  # overflow
+            if tval == -1:  # overflow
                 break
     elif opcode == 3:  # dec
         result = operand1 - 1
@@ -175,6 +195,12 @@ while 1:
         result = operand1 + 1
     elif opcode == 7:  # load
         result = memdata
+    elif opcode == 8:  # store
+        # operand1: value from reg1 (already fetched)
+        # operand2: absolute address (low field)
+        setdatamem(operand2, operand1)
+        result = None  # nothing to write back
+
     elif opcode == 9:  # load immediate
         result = operand2
     elif opcode == 12:  # conditional branch
@@ -193,9 +219,11 @@ while 1:
             break
         reg1 = treg
         ip = operand2
+
     # write back
-    if ((opcode == 1) | (opcode == 2) |
-            (opcode == 3) | (opcode == 4)):  # arithmetic
+    # if ((opcode == 1) | (opcode == 2) |
+    #         (opcode == 3) | (opcode == 4)):  # arithmetic
+    if opcode in (1, 2, 3, 4):  # arithmetic
         reg[reg1] = result
     elif (opcode == 7) | (opcode == 9):  # loads
         reg[reg1] = result
@@ -203,5 +231,15 @@ while 1:
         reg[reg1] = result
     elif opcode == 16:  # store return address
         reg[reg1] = result
+    # base 5-cycle model for Part 1
+    clock += 5
     # end of instruction loop
 # end of execution
+
+print('=== CAT2 Part 1 stats ===')
+print('IC =', ic)
+print('Clock =', clock)
+print('Code refs =', numcoderefs)
+print('Data refs =', numdatarefs)
+print('Total mem refs =', numcoderefs + numdatarefs)
+

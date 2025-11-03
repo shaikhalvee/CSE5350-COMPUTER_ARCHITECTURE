@@ -48,13 +48,14 @@ for line in infile.readlines():  # read our asm code
     tokens = line.split()
     firsttoken = tokens[0]
 
-    print(f'tokens: {tokens}')
+    print(f'{tokens}')
 
     if firsttoken.isdigit():  # if line starts with an address
         curaddr = int(tokens[0])  # assemble to here
         tokens = tokens[1:]
         if not tokens:
             continue
+        firsttoken = tokens[0]
     if firsttoken == ';':  # skip comments
         continue
     if firsttoken == 'go':  # start execution here
@@ -70,9 +71,9 @@ for line in infile.readlines():  # read our asm code
         curaddr += 1
     # 'end' (type 0) emits nothing
 
-print("symbol table")
-print(symboltable)
-print("end sym table")
+print("---- start sym table ----")
+print(f'{symboltable}')
+print("---- end sym table ----")
 
 # ------    Pass 2
 infile.close()
@@ -94,6 +95,7 @@ for raw in infile.readlines():  # read our asm code
         tokens = tokens[1:]
         if not tokens:
             continue
+        firsttoken = tokens[0]
     # if firsttoken == ';':  # skip comments
     #     continue
     if firsttoken == 'go':  # start execution here
@@ -137,8 +139,9 @@ for raw in infile.readlines():  # read our asm code
         else:
             memaddr = symboltable[token2]
         memdata = memdata + (regval(tokens[1]) << reg1position) + memaddr
-    mem[curaddr] = memdata  # memory image at the current location
-    curaddr += 1
+    if instype != 0:
+        mem[curaddr] = memdata  # memory image at the current location
+        curaddr += 1
 
 outfile = open("a.out", 'w')  # done, write it out
 outfile.write('go ' + '%d' % startexecptr)  # start execution here
