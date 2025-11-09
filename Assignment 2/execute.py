@@ -266,7 +266,11 @@ class Cache:
                 # write-allocate + write-through
                 line["data"][word_off] = write_val & nummask
                 if self.lower:
-                    self.lower.write_word(block_addr*self.block_words + word_off, write_val & nummask)
+                    addr = block_addr * self.block_words + word_off
+                    if hasattr(self.lower, "write_word"):
+                        self.lower.write_word(addr, write_val & nummask)
+                    else:
+                        self.lower.access(addr, is_load=False, write_val=write_val & nummask)
                 return None
 
         # miss: fetch block from lower
@@ -284,15 +288,20 @@ class Cache:
         else:
             victim["data"][word_off] = write_val & nummask
             if self.lower:
-                self.lower.write_word(block_addr*self.block_words + word_off, write_val & nummask)
+                addr = block_addr * self.block_words + word_off
+                if hasattr(self.lower, "write_word"):
+                    self.lower.write_word(addr, write_val & nummask)
+                else:
+                    self.lower.access(addr, is_load=False, write_val=write_val & nummask)
+
             return None
 
 # Select one:
 #   "U_DM_2x4", "U_DM_4x4", "U_DM_2x8",
 #   "SPLIT_I2x2_D2x2", "SPLIT_I4x2_D4x4",
 #   "U_SA2_2x8"
-CACHE_MODE = "SPLIT_I4x2_D4x4"
-USE_L2 = True  # set True to enable L2 = 8x8 unified
+CACHE_MODE = "U_SA2_2x8"
+USE_L2 = False  # set True to enable L2 = 8x8 unified
 
 # Build hierarchy
 mainmem = MainMem(mem, "MEM")
