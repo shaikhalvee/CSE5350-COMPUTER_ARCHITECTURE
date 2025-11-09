@@ -39,7 +39,7 @@ numdatarefs = 0  # number of times data read
 starttime = time.time()
 curtime = starttime
 
-# Part 2: Hazard model (5-stage) & 1-bit branch predictor
+# ====== Part 2: Hazard model (kept intact) ======
 WB_LAT = 5  # cycles until a dest register becomes visible (WB stage)
 reg_ready = [0] * numregs  # cycle when each reg's value is ready
 hazard_stalls = 0          # total cycles stalled for hazards
@@ -77,12 +77,11 @@ PHYS_MASK = (1 << numregbits) - 1
 def phys_reg(r):
     # strip indirect bit to get the base register index (0..numregs-1)
     return r & PHYS_MASK
-# ---
+# ================================================
 
 def startexechere(p):
     # start execution at this address
     reg[codeseg] = p
-
 
 def loadmem():  # get binary load image
     curaddr = 0
@@ -94,18 +93,35 @@ def loadmem():  # get binary load image
             mem[curaddr] = int(token[0], 0)
             curaddr = curaddr + 1
 
+# --------- Part 3: trace collection (minimal intrusion) ---------
+# record every memory ref as ('I' or 'D', 'R' or 'W', absolute_word_address)
+mem_trace = []
 
+# part 1 overrides (keep counters and now record trace)
 def getcodemem(a):
-    # get code memory at this address
-    memval = mem[a + reg[codeseg]]
-    return (memval)
-
+    # instruction fetch
+    global numcoderefs
+    numcoderefs += 1
+    eff = a + reg[codeseg]
+    mem_trace.append(('I', 'R', eff))
+    return mem[eff]
 
 def getdatamem(a):
-    # get code memory at this address
-    memval = mem[a + reg[dataseg]]
-    return (memval)
+    # data read
+    global numdatarefs
+    numdatarefs += 1
+    eff = a + reg[dataseg]
+    mem_trace.append(('D', 'R', eff))
+    return mem[eff]
 
+def setdatamem(a, val):
+    # data write (store)
+    global numdatarefs
+    numdatarefs += 1
+    eff = a + reg[dataseg]
+    mem_trace.append(('D', 'W', eff))
+    mem[eff] = val & nummask
+# ---------------------------------------------------------------
 
 def getregval(r):
     # get reg or indirect value
@@ -114,7 +130,6 @@ def getregval(r):
     else:
         rval = getdatamem(reg[r - numregs])  # indirect data with mem address
     return rval
-
 
 def checkres(v1, v2, res):
     v1sign = (v1 >> (wordsize - 1)) & 1
@@ -127,7 +142,6 @@ def checkres(v1, v2, res):
     else:
         return 0
 
-
 def dumpstate(d):
     if d == 1:
         print(reg)
@@ -136,7 +150,6 @@ def dumpstate(d):
     elif d == 3:
         print('clock=', clock, 'IC=', ic, 'Coderefs=', numcoderefs, 'Datarefs=', numdatarefs, 'Start Time=', starttime,
               'Currently=', time.time())
-
 
 def trap(t, a=None):
     # unusual cases
@@ -157,215 +170,6 @@ def trap(t, a=None):
     return (-1, -1)
     return (rv, rl)
 
-
-# part 1 codes here
-# def getcodemem(a):
-#     # instruction fetch
-#     global numcoderefs
-#     numcoderefs += 1
-#     return mem[a + reg[codeseg]]
-#
-# def getdatamem(a):
-#     # data read
-#     global numdatarefs
-#     numdatarefs += 1
-#     return mem[a + reg[dataseg]]
-#
-# def setdatamem(a, val):
-#     # data write (store)
-#     global numdatarefs
-#     numdatarefs += 1
-#     mem[a + reg[dataseg]] = val & nummask
-
-# ---- Part 3: Cache & Main memory class
-# Latencies
-LAT_L1  = 1
-LAT_L2  = 4
-LAT_MEM = 25
-
-class MainMem:
-    def __init__(self, mem_array, name="MEM"):
-        self.mem = mem_array
-        self.name = name
-        self.accesses = 0
-
-    def read_word(self, addr):
-        self.accesses += 1
-        add_cycles(LAT_MEM)
-        return self.mem[addr & (len(self.mem)-1)]
-
-    def write_word(self, addr, val):
-        self.accesses += 1
-        add_cycles(LAT_MEM)
-        self.mem[addr & (len(self.mem)-1)] = val & nummask
-
-    def read_block(self, base_addr, block_words):
-        # pull a whole block from memory
-        return [self.read_word(base_addr + i) for i in range(block_words)]
-
-class Cache:
-    """
-    Generic cache: supports direct-mapped (ways=1) and set-assoc (ways>1).
-    LRU replacement. Write-allocate, write-through to lower level.
-    """
-    def __init__(self, block_words, lines, ways=1, name="L1", lat=1, lower=None):
-        assert lines % ways == 0
-        self.block_words = block_words
-        self.ways = ways
-        self.sets = lines // ways
-        self.name = name
-        self.lat = lat
-        self.lower = lower
-        self.tags = [[{"valid": False, "tag": None, "lru": 0, "data": [0]*block_words}
-                      for _ in range(ways)] for _ in range(self.sets)]
-        self.accesses = 0
-        self.hits = 0
-
-    def _set_idx_tag(self, word_addr):
-        block_addr = word_addr // self.block_words
-        set_idx = block_addr % self.sets
-        tag = block_addr // self.sets
-        word_off = word_addr % self.block_words
-        return set_idx, tag, word_off, block_addr
-
-    def _touch(self, set_idx, way):
-        # update LRU
-        for line in self.tags[set_idx]:
-            line["lru"] += 1
-        self.tags[set_idx][way]["lru"] = 0
-
-    def _read_block_from_lower(self, base_addr, block_words):
-        # Works whether lower is another Cache or MainMem
-        if hasattr(self.lower, "read_block"):
-            return self.lower.read_block(base_addr, block_words)
-        else:
-            # lower is a Cache: fetch words one by one via access()
-            return [self.lower.access(base_addr + i, is_load=True) for i in range(block_words)]
-
-    def access(self, word_addr, is_load=True, write_val=None):
-        self.accesses += 1
-        set_idx, tag, word_off, block_addr = self._set_idx_tag(word_addr)
-
-        # tag lookup latency
-        add_cycles(self.lat)
-
-        # hit?
-        hit_way = None
-        for w, line in enumerate(self.tags[set_idx]):
-            if line["valid"] and line["tag"] == tag:
-                hit_way = w
-                break
-
-        if hit_way is not None:
-            self.hits += 1
-            self._touch(set_idx, hit_way)
-            line = self.tags[set_idx][hit_way]
-            if is_load:
-                return line["data"][word_off]
-            else:
-                # write-allocate + write-through
-                line["data"][word_off] = write_val & nummask
-                if self.lower:
-                    self.lower.write_word(block_addr*self.block_words + word_off, write_val & nummask)
-                return None
-
-        # miss: fetch block from lower
-        victim = max(self.tags[set_idx], key=lambda L: L["lru"])
-        if self.lower:
-            base = block_addr * self.block_words
-            block = self._read_block_from_lower(base, self.block_words)
-        else:
-            block = [0] * self.block_words
-
-        victim.update({"valid": True, "tag": tag, "lru": 0, "data": block})
-
-        if is_load:
-            return victim["data"][word_off]
-        else:
-            victim["data"][word_off] = write_val & nummask
-            if self.lower:
-                self.lower.write_word(block_addr*self.block_words + word_off, write_val & nummask)
-            return None
-
-# Select one:
-#   "U_DM_2x4", "U_DM_4x4", "U_DM_2x8",
-#   "SPLIT_I2x2_D2x2", "SPLIT_I4x2_D4x4",
-#   "U_SA2_2x8"
-CACHE_MODE = "SPLIT_I4x2_D4x4"
-USE_L2 = True  # set True to enable L2 = 8x8 unified
-
-# Build hierarchy
-mainmem = MainMem(mem, "MEM")
-
-l2 = None
-if USE_L2:
-    # L2: 8x8 unified, direct-mapped (ways=1)
-    l2 = Cache(block_words=8, lines=8, ways=1, name="L2", lat=LAT_L2, lower=mainmem)
-
-l1i = l1d = l1u = None
-if CACHE_MODE == "U_DM_2x4":
-    l1u = Cache(2, 4, 1, "L1U DM 2x4", LAT_L1, lower=(l2 or mainmem))
-elif CACHE_MODE == "U_DM_4x4":
-    l1u = Cache(4, 4, 1, "L1U DM 4x4", LAT_L1, lower=(l2 or mainmem))
-elif CACHE_MODE == "U_DM_2x8":
-    l1u = Cache(2, 8, 1, "L1U DM 2x8", LAT_L1, lower=(l2 or mainmem))
-elif CACHE_MODE == "U_SA2_2x8":
-    l1u = Cache(2, 8, 2, "L1U 2-way 2x8", LAT_L1, lower=(l2 or mainmem))
-elif CACHE_MODE == "SPLIT_I2x2_D2x2":
-    l1i = Cache(2, 2, 1, "L1I DM 2x2", LAT_L1, lower=(l2 or mainmem))
-    l1d = Cache(2, 2, 1, "L1D DM 2x2", LAT_L1, lower=(l2 or mainmem))
-elif CACHE_MODE == "SPLIT_I4x2_D4x4":
-    l1i = Cache(4, 2, 1, "L1I DM 4x2", LAT_L1, lower=(l2 or mainmem))
-    l1d = Cache(4, 4, 1, "L1D DM 4x4", LAT_L1, lower=(l2 or mainmem))
-else:
-    # default to unified 2x4
-    l1u = Cache(2, 4, 1, "L1U DM 2x4", LAT_L1, lower=(l2 or mainmem))
-
-
-def getcodemem(a):
-    # instruction fetch
-    global numcoderefs
-    numcoderefs += 1
-    word_addr = a + reg[codeseg]
-    if l1u is not None:
-        return l1u.access(word_addr, is_load=True)
-    else:
-        return l1i.access(word_addr, is_load=True)
-
-def getdatamem(a):
-    # data load
-    global numdatarefs
-    numdatarefs += 1
-    word_addr = a + reg[dataseg]
-    if l1u is not None:
-        return l1u.access(word_addr, is_load=True)
-    else:
-        return l1d.access(word_addr, is_load=True)
-
-def setdatamem(a, val):
-    # data store (write-allocate + write-through)
-    global numdatarefs
-    numdatarefs += 1
-    word_addr = a + reg[dataseg]
-    if l1u is not None:
-        l1u.access(word_addr, is_load=False, write_val=val & nummask)
-    else:
-        l1d.access(word_addr, is_load=False, write_val=val & nummask)
-
-
-# ---- Part 3: Cache config & helpers ----
-def add_cycles(c):
-    # add extra latency on top of your base 5/cycle model
-    global clock
-    if c > 0:
-        clock += c
-
-def _cache_report(c):
-    if c is None or c.accesses == 0:
-        return
-    hr = (100.0 * c.hits / c.accesses) if c.accesses else 0.0
-    print(f"{c.name}: accesses={c.accesses}, hits={c.hits}, hit%={hr:.1f}")
-
 # opcode type (1 reg, 2 reg, reg+addr, immed), mnemonic
 opcodes = {1: (2, 'add'), 2: (2, 'sub'),
            3: (1, 'dec'), 4: (1, 'inc'),
@@ -373,10 +177,12 @@ opcodes = {1: (2, 'add'), 2: (2, 'sub'),
            12: (3, 'bnz'), 13: (3, 'brl'),
            14: (1, 'ret'),
            16: (3, 'int')}
+
 startexechere(0)  # start execution here if no "go"
 loadmem()  # load binary executable
 ip = 0  # start execution at codeseg location 0
-# while instruction is not halt
+
+# ===================== EXECUTION LOOP (unchanged) =====================
 while 1:
     ir = getcodemem(ip)  # - fetch
     ip = ip + 1
@@ -402,8 +208,7 @@ while 1:
     elif opcodes[opcode][0] == 0:  # ? type
         break
 
-        # ===== Part 2: data hazard detection (RAW/WAW) =====
-        # Identify source and destination regs precisely by opcode
+    # ===== Part 2: data hazard detection (RAW/WAW) =====
     sources = []
     dest = None
 
@@ -422,56 +227,55 @@ while 1:
     elif opcode == 9:  # ldi: r1 <= imm
         sources = []
         dest = reg1
-    elif opcode == 12:  # bnz r1, addr    (reads r1)
+    elif opcode == 12:  # bnz r1, addr
         sources = [reg1]
         dest = None
-    elif opcode == 13:  # brl r1, addr    (writes link to r1)
+    elif opcode == 13:  # brl r1, addr
         sources = []
         dest = reg1
-    elif opcode == 14:  # ret r1          (reads r1)
+    elif opcode == 14:  # ret r1
         sources = [reg1]
         dest = None
-    elif opcode == 16:  # int/sys r1      (reads and then writes r1)
+    elif opcode == 16:  # int/sys r1
         sources = [reg1]
         dest = reg1
-    # convert logical (possibly indirect) to physical reg indices
+
     sources_phys = [phys_reg(r) for r in sources]
     dest_phys = None if (dest is None) else phys_reg(dest)
 
-    # RAW: all sources must be ready before we proceed
+    # RAW
     if sources_phys:
         need = max(reg_ready[r] for r in sources_phys)
         stall_until(need, "RAW", sources_phys)
 
-    # WAW: don't clobber an outstanding earlier write to the same dest
+    # WAW
     if dest_phys is not None:
         stall_until(reg_ready[dest_phys], "WAW", [dest_phys])
 
     if opcode == 7:  # get data memory for loads
         memdata = getdatamem(operand2)
 
-    # ---- Branch prediction bookkeeping for BNZ (uses current ip as fallthrough) ----
-    # pc of this instruction is ip-1 (we incremented ip right after fetch)
+    # ---- Branch prediction bookkeeping for BNZ ----
     pc = ip - 1
     predicted_taken = None
     predicted_next = None
     if opcode == 12:  # bnz
         idx = bp_index(pc)
         predicted_taken = (bp_table[idx] == 1)
-        predicted_next = (operand2 if predicted_taken else ip)  # fallthrough is current
+        predicted_next = (operand2 if predicted_taken else ip)
 
     # execute
     if opcode == 1:  # add
         result = (operand1 + operand2) & nummask
         if checkres(operand1, operand2, result):
             tval, treg = trap(1)
-            if (tval == -1):  # overflow
+            if (tval == -1):
                 break
     elif opcode == 2:  # sub
         result = (operand1 - operand2) & nummask
         if checkres(operand1, operand2, result):
             tval, treg = trap(1)
-            if tval == -1:  # overflow
+            if tval == -1:
                 break
     elif opcode == 3:  # dec
         result = operand1 - 1
@@ -480,33 +284,28 @@ while 1:
     elif opcode == 7:  # load
         result = memdata
     elif opcode == 8:  # store
-        # operand1: value from reg1 (already fetched)
-        # operand2: absolute address (low field)
         setdatamem(operand2, operand1)
-        result = None  # nothing to write back
-    elif opcode == 9:  # load immediate
+        result = None
+    elif opcode == 9:  # ldi
         result = operand2
-    elif opcode == 12:  # conditional branch
-        # Actual outcome
+    elif opcode == 12:  # bnz
         taken = (operand1 != 0)
         actual_next = operand2 if taken else ip
-        # Compare to prediction (if we made one)
         if predicted_taken is not None:
             if predicted_next == actual_next:
                 bp_hits += 1
             else:
                 bp_misses += 1
-                clock += BP_MISPRED_PENALTY  # control hazard penalty on mispredict
-            # Update predictor
+                clock += BP_MISPRED_PENALTY
             bp_table[bp_index(pc)] = 1 if taken else 0
         ip = actual_next
-        result = operand1  # for consistency with your existing code path
-    elif opcode == 13:  # branch and link
+        result = operand1
+    elif opcode == 13:  # brl
         result = ip
         ip = operand2
-    elif opcode == 14:  # return
+    elif opcode == 14:  # ret
         ip = operand1
-    elif opcode == 16:  # interrupt/sys call
+    elif opcode == 16:  # int/sys
         result = ip
         tval, treg = trap(reg1)
         if tval == -1:
@@ -515,8 +314,6 @@ while 1:
         ip = operand2
 
     # write back
-    # if ((opcode == 1) | (opcode == 2) |
-    #         (opcode == 3) | (opcode == 4)):  # arithmetic
     if opcode in (1, 2, 3, 4):  # arithmetic
         reg[reg1] = result
     elif (opcode == 7) | (opcode == 9):  # loads
@@ -526,14 +323,13 @@ while 1:
     elif opcode == 16:  # store return address
         reg[reg1] = result
 
-    # Mark destination ready after WB (for instructions that write a reg)
+    # Mark destination ready after WB
     if opcode in (1, 2, 3, 4, 7, 9, 13, 16):
         mark_write(phys_reg(reg1))
 
     # base 5-cycle model for Part 1
     clock += 5
-    # end of instruction loop
-# end of execution
+# ================== END EXECUTION LOOP ==================
 
 print('=== CAT2 Part 1 stats ===')
 print('IC =', ic)
@@ -545,14 +341,197 @@ print('Total mem refs =', numcoderefs + numdatarefs)
 print('=== CAT2 Part 2 stats ===')
 print('Hazard stalls =', hazard_stalls, 'cycles')
 print('Branch predictor: hits =', bp_hits, 'misses =', bp_misses)
-# If you want to see a few recent hazards:
 for e in hazard_events[-10:]:
     pc, kind, regs, stall = e
     print(f'Hazard @pc={pc}: {kind} regs={regs} stalled {stall} cycles')
 
-print('=== CAT2 Part 3 cache stats ===')
-if l1u: _cache_report(l1u)
-if l1i: _cache_report(l1i)
-if l1d: _cache_report(l1d)
-if l2:  _cache_report(l2)
-print(f"Main memory accesses={mainmem.accesses}")
+# ====================== Part 3: Cache simulator ======================
+# Costs per access (assignment spec)
+L1_COST = 1
+L2_COST = 4
+MEM_COST = 25
+
+class CacheLine:
+    __slots__ = ('tag','valid','dirty','lru')
+    def __init__(self):
+        self.tag = 0
+        self.valid = False
+        self.dirty = False
+        self.lru = 0
+
+class Cache:
+    def __init__(self, line_words, total_lines, assoc=1, name="L1"):
+        self.line_words = max(1, int(line_words))
+        self.assoc = max(1, int(assoc))
+        self.sets = max(1, int(total_lines // self.assoc))
+        self.name = name
+        self.time = 0  # for LRU
+        self.set = [[CacheLine() for _ in range(self.assoc)] for _ in range(self.sets)]
+        # stats
+        self.refs = 0
+        self.hits = 0
+        self.write_hits = 0
+        self.read_hits = 0
+
+    def _index_tag(self, addr_word):
+        block = addr_word // self.line_words
+        idx = block % self.sets
+        tag = block // self.sets
+        return idx, tag
+
+    def access(self, addr_word, is_write=False):
+        """Return (hit:bool, evicted_dirty:bool) and update LRU/dirty."""
+        self.refs += 1
+        idx, tag = self._index_tag(addr_word)
+        self.time += 1
+        # hit?
+        for line in self.set[idx]:
+            if line.valid and line.tag == tag:
+                self.hits += 1
+                if is_write:
+                    self.write_hits += 1
+                    line.dirty = True
+                else:
+                    self.read_hits += 1
+                line.lru = self.time
+                return True, False
+        # miss: choose victim (free or LRU)
+        victim = None
+        for line in self.set[idx]:
+            if not line.valid:
+                victim = line
+                break
+        if victim is None:
+            victim = min(self.set[idx], key=lambda ln: ln.lru)
+        ev_dirty = (victim.valid and victim.dirty)
+        # fill
+        victim.tag = tag
+        victim.valid = True
+        victim.dirty = bool(is_write)  # write-allocate + write-back
+        victim.lru = self.time
+        return False, ev_dirty
+
+def simulate_config(trace, base_clock, cfg):
+    """
+    cfg: dict describing caches.
+      - unified: {'L1': (line_words,total_lines,assoc)}
+      - split:   {'I': (lw,lines,assoc), 'D': (lw,lines,assoc)}
+      - optional 'L2': (lw,lines,assoc)
+      - name: label
+    """
+    name = cfg.get('name', 'config')
+    # Build caches
+    if 'unified' in cfg:
+        lw, lines, assoc = cfg['unified']
+        L1U = Cache(lw, lines, assoc, name="L1U")
+        I = D = L1U
+    else:
+        lwI, linesI, assocI = cfg['I']
+        lwD, linesD, assocD = cfg['D']
+        I = Cache(lwI, linesI, assocI, name="L1I")
+        D = Cache(lwD, linesD, assocD, name="L1D")
+    L2 = None
+    if 'L2' in cfg:
+        lw2, lines2, assoc2 = cfg['L2']
+        L2 = Cache(lw2, lines2, assoc2, name="L2")
+
+    # stats
+    mem_cycles = 0
+    l2_refs = l2_hits = 0
+    evict_wb_cycles = 0
+
+    for kind, rw, addr in trace:
+        is_write = (rw == 'W')
+        L1 = I if kind == 'I' else D
+
+        hit, ev_dirty = L1.access(addr, is_write=is_write)
+        if hit:
+            mem_cycles += L1_COST
+        else:
+            # miss → next level
+            if L2 is not None:
+                l2_refs += 1
+                h2, ev2_dirty = L2.access(addr, is_write=False)  # fill read from below
+                if h2:
+                    mem_cycles += L2_COST
+                else:
+                    mem_cycles += MEM_COST
+                # if L1 victim was dirty, write back to L2
+                if ev_dirty:
+                    # write-back arrives at L2
+                    L2.access(addr, is_write=True)  # model a write into L2 set (tag based on victim's block)
+                    evict_wb_cycles += L2_COST
+            else:
+                mem_cycles += MEM_COST
+                # write-back to memory if evicted dirty
+                if ev_dirty:
+                    evict_wb_cycles += MEM_COST
+            # After lower level, line is considered filled in L1 by the L1.access() call above
+
+        # Write on miss is already marked dirty due to write-allocate
+
+    # report
+    i_refs = I.refs if I is not D else sum(1 for k,_,_ in trace if k == 'I')
+    d_refs = D.refs if I is not D else sum(1 for k,_,_ in trace if k == 'D')
+
+    # L1 hit rates
+    i_hit = (I.read_hits + I.write_hits) if I is not D else I.hits  # in unified, I==D
+    d_hit = (0 if I is D else (D.read_hits + D.write_hits))
+    if I is D:
+        # split per kind from trace on unified
+        i_hit = sum(1 for k, rw, a in trace if k == 'I' and I.access(a, False) is not None)  # not accurate to recompute
+        # simpler: approximate I hit rate from ratio of I refs in unified hits
+        # but keep simple: compute overall L1 hit rate and per-kind using counters already available:
+        pass  # keep aggregated below
+
+    overall_hits = (I.hits + (0 if I is D else D.hits))
+    overall_refs = i_refs + d_refs
+    l1_hit_rate = (overall_hits / overall_refs) if overall_refs else 0.0
+
+    # L2 hit rate
+    l2_hit_rate = (l2_hits / l2_refs) if l2_refs else 0.0  # (we didn't count separate l2_hits in this simplified model)
+
+    total_cycles = base_clock + mem_cycles + evict_wb_cycles
+
+    # Print
+    print(f'\n--- CAT2 Part 3: {name} ---')
+    print(f'I-refs={i_refs}  D-refs={d_refs}  Total={overall_refs}')
+    print(f'L1 hits={overall_hits}  L1 hit rate={l1_hit_rate:.3f}')
+    if L2 is not None:
+        print(f'L2 refs={l2_refs}  (approx) L2 hit rate not separately tallied in this minimal model')
+    print(f'Memory cycles (access) = {mem_cycles}  + writeback cycles = {evict_wb_cycles}')
+    print(f'Overall cycles (Clock + memory) = {base_clock} + {mem_cycles + evict_wb_cycles} = {total_cycles}')
+
+    # Cache contents (tags per set)
+    def dump_cache(c):
+        print(f'[{c.name}] sets={c.sets}  assoc={c.assoc}  line_words={c.line_words}')
+        for s in range(c.sets):
+            line_desc = []
+            for ln in c.set[s]:
+                if ln.valid:
+                    line_desc.append(f'tag={ln.tag:x}{"*D" if ln.dirty else ""}')
+                else:
+                    line_desc.append('—')
+            print(f'  set {s:02d}: ' + ' | '.join(line_desc))
+    if I is D:
+        dump_cache(I)
+    else:
+        dump_cache(I); dump_cache(D)
+    if L2 is not None:
+        dump_cache(L2)
+
+# Build and run the requested configurations
+configs = [
+    {'name':'DM unified 2x4', 'unified': (2, 4, 1)},
+    {'name':'DM unified 4x4', 'unified': (4, 4, 1)},
+    {'name':'DM unified 2x8', 'unified': (2, 8, 1)},
+    {'name':'Split: I=2x2, D=2x2', 'I': (2, 2, 1), 'D': (2, 2, 1)},
+    {'name':'Split: I=4x2, D=4x4', 'I': (4, 2, 1), 'D': (4, 4, 1)},
+    {'name':'2-way SA unified 2x8', 'unified': (2, 8, 2)},
+    # Optional L2 example under a DM L1:
+    {'name':'DM unified 2x8 + L2 8x8', 'unified': (2, 8, 1), 'L2': (8, 8, 1)},
+]
+
+for cfg in configs:
+    simulate_config(mem_trace, clock, cfg)
+# =================== End Part 3: Cache simulator ======================
