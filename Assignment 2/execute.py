@@ -137,6 +137,27 @@ def dumpstate(d):
         print('clock=', clock, 'IC=', ic, 'Coderefs=', numcoderefs, 'Datarefs=', numdatarefs, 'Start Time=', starttime,
               'Currently=', time.time())
 
+def dump_task4(vec_base, N, sum_reg_idx=1):
+    """
+    Debug helper for Task 4:
+    - vec_base: base address of result vector C (word address)
+    - N: number of elements in the vector
+    - sum_reg_idx: which register holds the scalar sum (default r1)
+    """
+    print('--- Task 4 debug dump ---')
+    # Print the sum register
+    sum_val = reg[sum_reg_idx]
+    print(f"r{sum_reg_idx} (vector sum) = {sum_val} (0x{sum_val:x})")
+
+    # Print vector contents directly from memory array
+    base = vec_base + reg[dataseg]  # include data segment offset
+    print(f"Vector C at logical address {vec_base}, length {N}:")
+    for i in range(N):
+        addr = base + i
+        val = mem[addr]
+        print(f"  C[{i}] @ mem[{addr}] = {val} (0x{val:x})")
+    print('-------------------------')
+
 
 def trap(t, a=None):
     # unusual cases
@@ -381,7 +402,9 @@ opcodes = {1: (2, 'add'), 2: (2, 'sub'),
            7: (3, 'ld'), 8: (3, 'st'), 9: (3, 'ldi'),
            12: (3, 'bnz'), 13: (3, 'brl'),
            14: (1, 'ret'),
-           16: (3, 'int')}
+           16: (3, 'int'),
+           17: (3, 'vadd'), 18: (3, 'vsum')}  # Part 4
+
 startexechere(0)  # start execution here if no "go"
 loadmem()  # load binary executable
 ip = 0  # start execution at codeseg location 0
@@ -443,6 +466,13 @@ while 1:
     elif opcode == 16:  # int/sys r1      (reads and then writes r1)
         sources = [reg1]
         dest = reg1
+    elif opcode == 17:  # vadd r1, addr  (vector add, result in reg1)
+        sources = []    # params in memory descriptor, not in regs
+        dest = reg1
+    elif opcode == 18:  # vsum r1, addr  (vector sum, result in reg1)
+        sources = []
+        dest = reg1
+
     # convert logical (possibly indirect) to physical reg indices
     sources_phys = [phys_reg(r) for r in sources]
     dest_phys = None if (dest is None) else phys_reg(dest)
@@ -522,11 +552,50 @@ while 1:
             break
         reg1 = treg
         ip = operand2
+    elif opcode == 17:  # vadd r1, addr  (vector add via descriptor at addr)
+        # Descriptor layout at operand2:
+        # [0] = A_base
+        # [1] = B_base
+        # [2] = C_base (destination)
+        # [3] = N   (#elements, N < 32)
+        desc_base = operand2
+        baseA = getdatamem(desc_base + 0)
+        baseB = getdatamem(desc_base + 1)
+        baseC = getdatamem(desc_base + 2)
+        N = getdatamem(desc_base + 3)
+
+        # Perform C[i] = A[i] + B[i] for i = 0..N-1
+        for i in range(N):
+            a_val = getdatamem(baseA + i)
+            b_val = getdatamem(baseB + i)
+            c_val = (a_val + b_val) & nummask
+            setdatamem(baseC + i, c_val)
+            # cost of internal scalar add in 5-stage pipeline
+            clock += 5
+
+        # Put destination base in reg1 (optional, but useful)
+        result = baseC
+
+    elif opcode == 18:  # vsum r1, addr  (vector sum via descriptor at addr)
+        # Descriptor layout at operand2:
+        # [0] = C_base
+        # [1] = N
+        desc_base = operand2
+        baseC = getdatamem(desc_base + 0)
+        N = getdatamem(desc_base + 1)
+
+        acc = 0
+        for i in range(N):
+            a_val = getdatamem(baseC + i)
+            acc = (acc + a_val) & nummask
+            clock += 5  # internal scalar add cost
+
+        result = acc
 
     # write back
     # if ((opcode == 1) | (opcode == 2) |
     #         (opcode == 3) | (opcode == 4)):  # arithmetic
-    if opcode in (1, 2, 3, 4):  # arithmetic
+    if opcode in (1, 2, 3, 4, 17, 18):  # arithmetic + vector
         reg[reg1] = result
     elif (opcode == 7) | (opcode == 9):  # loads
         reg[reg1] = result
@@ -536,13 +605,15 @@ while 1:
         reg[reg1] = result
 
     # Mark destination ready after WB (for instructions that write a reg)
-    if opcode in (1, 2, 3, 4, 7, 9, 13, 16):
+    if opcode in (1, 2, 3, 4, 7, 9, 13, 16, 17, 18):
         mark_write(phys_reg(reg1))
 
     # base 5-cycle model for Part 1
     clock += 5
     # end of instruction loop
 # end of execution
+
+dump_task4(vec_base=15, N=3, sum_reg_idx=1)
 
 print('=== CAT2 Part 1 stats ===')
 print('IC =', ic)

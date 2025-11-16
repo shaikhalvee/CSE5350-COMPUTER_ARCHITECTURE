@@ -31,6 +31,7 @@ opcodes = {'add': (2, 1), 'sub': (2, 2),  # ie, "add" is a type 2 instruction, o
            'bnz': (3, 12), 'brl': (3, 13),
            'ret': (1, 14),
            'int': (3, 16), 'sys': (3, 16),  # syscalls are same as interrupts
+           'vadd': (3, 17), 'vsum': (3, 18),  # Part 4 vector ops
            'dw': (4, 0), 'go': (3, 0), 'end': (0, 0)}  # pseudo ops
 curaddr = 0  # start assembling to location 0
 
@@ -64,6 +65,8 @@ for line in infile.readlines():  # read our asm code
     if firsttoken.startswith('.'):
         symboltable[firsttoken] = curaddr
         tokens = tokens[1:]
+        if not tokens:
+            continue
     mnem = tokens[0]
     instype = opcodes[mnem][0]
     # only lines that emit a word should advance curaddr
@@ -106,9 +109,9 @@ for raw in infile.readlines():  # read our asm code
         # symboltable[firsttoken] = curaddr   # in the 1st pass
         # in the 2nd pass, drop the label token before parsing mnemonic:
         tokens = tokens[1:]
-        firsttoken = tokens[0]
         if not tokens:
             continue
+        firsttoken = tokens[0]
     memdata = 0  # build instruction step by step
 
     print("tokens", tokens[0])  # DEBUG
@@ -124,8 +127,14 @@ for raw in infile.readlines():  # read our asm code
     instype, opcode = opcodes[mnem]
     # memdata = (opcodes[tokens[0]][1]) << opcposition  # put in opcode
     memdata = (opcode << opcposition)
-    if instype == 4:  # dw type
-        memdata = (int(tokens[1]) & ((2 ** wordsize) - 1))  # data is wordsize long
+    if instype == 4:  # dw type: immediate or label
+        val = tokens[1]
+        # allow negative numbers too
+        if val.lstrip('-').isdigit():
+            memdata = int(val) & ((2 ** wordsize) - 1)
+        else:
+            # treat it as a label
+            memdata = symboltable[val] & ((2 ** wordsize) - 1)
     elif instype == 0:  # end type
         memdata = memdata
     elif instype == 1:  # dec,inc type, one reg
