@@ -78,7 +78,7 @@ print("---- start sym table ----")
 print(f'{symboltable}')
 print("---- end sym table ----")
 
-# ------    Pass 2
+# ------    Pass 2 emits words
 infile.close()
 infile = open("in.asm", 'r')
 

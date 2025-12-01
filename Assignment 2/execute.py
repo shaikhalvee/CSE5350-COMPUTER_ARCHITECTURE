@@ -231,12 +231,12 @@ class Cache:
     """
     def __init__(self, block_words, lines, ways=1, name="L1", lat=1, lower=None):
         assert lines % ways == 0
-        self.block_words = block_words
-        self.ways = ways
-        self.sets = lines // ways
+        self.block_words = block_words      # num of words per cache block
+        self.ways = ways                    # ways == 1 -> direct mapped. ways > 1 -> set-associative
+        self.sets = lines // ways           # num of sets
         self.name = name
         self.lat = lat
-        self.lower = lower
+        self.lower = lower                  # pointer to the next level (another cache or mainmem)
         self.tags = [[{"valid": False, "tag": None, "lru": 0, "data": [0]*block_words}
                       for _ in range(ways)] for _ in range(self.sets)]
         self.accesses = 0
@@ -321,7 +321,7 @@ class Cache:
 #   "U_DM_2x4", "U_DM_4x4", "U_DM_2x8",
 #   "SPLIT_I2x2_D2x2", "SPLIT_I4x2_D4x4",
 #   "U_SA2_2x8"
-CACHE_MODE = "U_SA2_2x8"
+CACHE_MODE = "U_DM_2x8"
 USE_L2 = False  # set True to enable L2 = 8x8 unified
 
 # Build hierarchy
@@ -434,8 +434,8 @@ while 1:
     elif opcodes[opcode][0] == 0:  # ? type
         break
 
-        # ===== Part 2: data hazard detection (RAW/WAW) =====
-        # Identify source and destination regs precisely by opcode
+    # ===== Part 2: data hazard detection (RAW/WAW) =====
+    # Identify source and destination regs precisely by opcode
     sources = []
     dest = None
 
@@ -482,7 +482,7 @@ while 1:
         need = max(reg_ready[r] for r in sources_phys)
         stall_until(need, "RAW", sources_phys)
 
-    # WAW: don't clobber an outstanding earlier write to the same dest
+    # WAW: don't overlap an outstanding earlier write to the same dest
     if dest_phys is not None:
         stall_until(reg_ready[dest_phys], "WAW", [dest_phys])
 
@@ -536,7 +536,7 @@ while 1:
             else:
                 bp_misses += 1
                 clock += BP_MISPRED_PENALTY  # control hazard penalty on mispredict
-            # Update predictor
+            # Update predictor to last outcome
             bp_table[bp_index(pc)] = 1 if taken else 0
         ip = actual_next
         result = operand1  # for consistency with your existing code path
