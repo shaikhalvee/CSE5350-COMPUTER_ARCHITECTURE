@@ -42,8 +42,8 @@ curtime = starttime
 # Part 2: Hazard model (5-stage) & 1-bit branch predictor
 WB_LAT = 5  # cycles until a dest register becomes visible (WB stage)
 reg_ready = [0] * numregs  # cycle when each reg's value is ready
-hazard_stalls = 0          # total cycles stalled for hazards
-hazard_events = []         # (pc, kind, regs, stall)
+hazard_stalls = 0 # total cycles stalled for hazards
+hazard_events = [] # (pc, kind, regs, stall)
 IND_BIT = (1 << numregbits)
 
 def stall_until(target_cycle, reason, regs):
@@ -321,8 +321,8 @@ class Cache:
 #   "U_DM_2x4", "U_DM_4x4", "U_DM_2x8",
 #   "SPLIT_I2x2_D2x2", "SPLIT_I4x2_D4x4",
 #   "U_SA2_2x8"
-CACHE_MODE = "U_DM_2x8"
-USE_L2 = False  # set True to enable L2 = 8x8 unified
+CACHE_MODE = "SPLIT_I4x2_D2x2"
+USE_L2 = True  # set True to enable L2 = 8x8 unified
 
 # Build hierarchy
 mainmem = MainMem(mem, "MEM")
@@ -473,7 +473,7 @@ while 1:
         sources = []
         dest = reg1
 
-    # convert logical (possibly indirect) to physical reg indices
+    # convert logical to physical reg indices
     sources_phys = [phys_reg(r) for r in sources]
     dest_phys = None if (dest is None) else phys_reg(dest)
 
