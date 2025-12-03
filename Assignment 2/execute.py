@@ -613,7 +613,7 @@ while 1:
     # end of instruction loop
 # end of execution
 
-dump_task4(vec_base=15, N=3, sum_reg_idx=1)
+dump_task4(vec_base=reg[0], N=3, sum_reg_idx=1)
 
 print('=== CAT2 Part 1 stats ===')
 print('IC =', ic)
